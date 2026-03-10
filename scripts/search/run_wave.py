@@ -94,6 +94,18 @@ def main():
     if not run(hf_cmd, f"Wave {n}: HuggingFace search"):
         sys.exit(1)
 
+    # If HF task filter produced too few results — retry without it
+    if args.hf_task:
+        try:
+            hf_count = len(json.load(open(raw_hf)))
+        except Exception:
+            hf_count = 0
+        if hf_count < 10:
+            print(f"\n  HF returned only {hf_count} results with --task-filter '{args.hf_task}'.")
+            print(f"  Retrying WITHOUT task filter to get broader coverage...")
+            hf_cmd_no_filter = [c for c in hf_cmd if c != args.hf_task and c != "--task-filter"]
+            run(hf_cmd_no_filter, f"Wave {n}: HuggingFace search (no task filter fallback)")
+
     # ── 2. Kaggle bulk search ──
     inputs_for_merge = [str(raw_hf)]
 
