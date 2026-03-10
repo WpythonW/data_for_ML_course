@@ -157,10 +157,14 @@ Then ask: "Would you like to explore any further, or refine the search?"
 
 - Run scripts autonomously without asking permission
 - `uv run` always, never plain `python` or `python3`
-- **Never write inline python scripts** (`python3 -c "..."`) — use the ready-made scripts in `scripts/search/`
-- **Never use shell substitution** (`$(...)` or backticks) — use `--exclude-ids-file` flags instead
-- **Never use `--fetch-cards`** — card fetching happens automatically inside `semantic_filter.py` for finalists only
-- Use `--task-filter` and `--license-filter` in `hf_bulk_search.py` when the task/license is known — filters on HF server side, faster and more relevant results
+## FORBIDDEN — never do these, they trigger security prompts
+
+- `python3 -c "..."` or `uv run python -c "..."` — NEVER write inline python. Use scripts in `scripts/search/` only.
+- `$(...)` or backtick substitution — NEVER. Use `--exclude-ids-file` flag instead.
+- `--fetch-cards` flag — NEVER. Card fetching is automatic inside `semantic_filter.py`.
+- Changing `OPENROUTER_MODEL` — NEVER. Fixed in `.env`.
+
+If you need to do something not covered by existing scripts — ask the user to add a new script instead of writing inline code.
 - Available utility scripts:
   - `scripts/search/hf_bulk_search.py` — fetch from HuggingFace
   - `scripts/search/kaggle_bulk_search.py` — fetch from Kaggle (same output format as HF)
