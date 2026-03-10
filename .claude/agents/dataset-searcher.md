@@ -16,18 +16,21 @@ You are an expert ML dataset researcher. Find the most relevant datasets using a
 ## Pipeline per wave
 
 ```
-hf_bulk_search.py  →  semantic_filter.py (6-stage internal pipeline)
-                                │
-                     Stage 1: BM25 (you set --bm25-top)
-                     Stage 2: OpenRouter filter + summarize
-                     Stage 3: OpenRouter rerank
-                     Stage 4: Haiku picks datasets to question
-                     Stage 5: OpenRouter answers questions
-                     Stage 6: Haiku final narrow selection
-                                │
-                          data/filtered_results_waveN.json
+hf_bulk_search.py  ──┐
+                      ├→ merge_results.py → semantic_filter.py (6-stage)
+kaggle_bulk_search.py─┘                              │
+                                         Stage 1: BM25 (you set --bm25-top)
+                                         Stage 2: OpenRouter filter + summarize
+                                         Stage 3: OpenRouter rerank
+                                         Stage 3.5: Fetch README cards (finalists only)
+                                         Stage 4: Haiku picks datasets to question
+                                         Stage 5: OpenRouter answers questions
+                                         Stage 6: Haiku final narrow selection
+                                                      │
+                                               data/filtered_results_waveN.json
 ```
 
+Each wave: run BOTH hf_bulk_search.py and kaggle_bulk_search.py, merge, then filter.
 The script handles stages 2–6 internally. Your job: set `--bm25-top` wisely.
 
 ### Setting --bm25-top
@@ -79,14 +82,30 @@ Ask follow-ups if vague. Then proceed autonomously — do NOT ask for permission
 
 ### Step 2 — Wave 1
 ```bash
+# Search HuggingFace
 uv run scripts/search/hf_bulk_search.py \
     --queries "q1,q2,..." \
     --limit-per-query 100 \
     --task-filter image-classification \
+    --output data/raw_hf_wave1.json
+
+# Search Kaggle
+uv run scripts/search/kaggle_bulk_search.py \
+    --queries "q1,q2,..." \
+    --limit-per-query 50 \
+    --output data/raw_kaggle_wave1.json
+
+# Merge both sources
+uv run scripts/search/merge_results.py \
+    --inputs data/raw_hf_wave1.json data/raw_kaggle_wave1.json \
     --output data/raw_results_wave1.json
 
-# Update seen_ids.txt (see above)
+# Update seen_ids.txt
+uv run scripts/search/update_seen_ids.py \
+    --input data/raw_results_wave1.json \
+    --seen-file data/seen_ids.txt
 
+# Filter
 uv run scripts/search/semantic_filter.py \
     --input data/raw_results_wave1.json \
     --goal "RICH DESCRIPTION of what user needs" \
@@ -144,9 +163,10 @@ Then ask: "Would you like to explore any further, or refine the search?"
 - Use `--task-filter` and `--license-filter` in `hf_bulk_search.py` when the task/license is known — filters on HF server side, faster and more relevant results
 - Available utility scripts:
   - `scripts/search/hf_bulk_search.py` — fetch from HuggingFace
+  - `scripts/search/kaggle_bulk_search.py` — fetch from Kaggle (same output format as HF)
   - `scripts/search/semantic_filter.py` — full 6-stage filtering pipeline
   - `scripts/search/update_seen_ids.py` — update seen_ids.txt after each bulk search
-  - `scripts/search/merge_results.py` — merge multiple raw result JSONs
+  - `scripts/search/merge_results.py` — merge multiple raw result JSONs (HF + Kaggle)
   - `scripts/search/merge_final.py` — merge filtered wave results into final output
 - Working directory: /Users/andrejustinov/Desktop/Data_for_ML
 - Store all intermediate files in `data/`
