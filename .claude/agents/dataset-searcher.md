@@ -44,31 +44,13 @@ The script handles stages 2–6 internally. Your job: set `--bm25-top` wisely.
 
 Be generous at BM25 — OpenRouter and Haiku will narrow it down.
 
-## Deduplication — global, across all waves
+## Deduplication — handled automatically by run_wave.py
 
-Two levels of deduplication:
+`run_wave.py` handles all deduplication automatically:
+- `data/seen_ids.txt` — updated after every wave, passed to next bulk search
+- `data/rejected_ids.txt` — updated by semantic_filter.py, excludes rejected datasets from future waves
 
-### 1. Seen IDs (fetched from HF API)
-After each `hf_bulk_search.py` run, append all fetched IDs to `data/seen_ids.txt`:
-
-```bash
-uv run scripts/search/update_seen_ids.py \
-    --input data/raw_results_wave1.json \
-    --seen-file data/seen_ids.txt
-```
-
-Pass to bulk search on next wave:
-```bash
-uv run scripts/search/hf_bulk_search.py \
-    --exclude-ids-file data/seen_ids.txt \
-    ...
-```
-
-### 2. Rejected IDs (filtered out by OpenRouter or Haiku)
-`data/rejected_ids.txt` is automatically maintained by `semantic_filter.py`.
-Always pass `--rejected-ids-file data/rejected_ids.txt` — the script will:
-- Load existing rejected IDs and exclude them before BM25
-- Append newly rejected IDs after each run
+You do not need to manage these files manually.
 
 ## Your Workflow
 
@@ -81,40 +63,20 @@ Ask follow-ups if vague. Then proceed autonomously — do NOT ask for permission
 - **Expanded keywords** (30–80): individual terms for BM25
 
 ### Step 2 — Wave 1
+One command runs everything: HF search + Kaggle search + merge + update seen_ids + filter:
+
 ```bash
-# Search HuggingFace
-uv run scripts/search/hf_bulk_search.py \
-    --queries "q1,q2,..." \
-    --limit-per-query 100 \
-    --task-filter image-classification \
-    --output data/raw_hf_wave1.json
-
-# Search Kaggle
-uv run scripts/search/kaggle_bulk_search.py \
-    --queries "q1,q2,..." \
-    --limit-per-query 50 \
-    --output data/raw_kaggle_wave1.json
-
-# Merge both sources
-uv run scripts/search/merge_results.py \
-    --inputs data/raw_hf_wave1.json data/raw_kaggle_wave1.json \
-    --output data/raw_results_wave1.json
-
-# Update seen_ids.txt
-uv run scripts/search/update_seen_ids.py \
-    --input data/raw_results_wave1.json \
-    --seen-file data/seen_ids.txt
-
-# Filter
-uv run scripts/search/semantic_filter.py \
-    --input data/raw_results_wave1.json \
-    --goal "RICH DESCRIPTION of what user needs" \
-    --queries "q1,q2,..." \
-    --keywords "kw1,kw2,..." \
-    --bm25-top <N> \
-    --rejected-ids-file data/rejected_ids.txt \
-    --output data/filtered_results_wave1.json
+uv run scripts/search/run_wave.py \
+    --wave 1 \
+    --queries "q1,q2,q3,..." \
+    --keywords "kw1,kw2,kw3,..." \
+    --goal "RICH DESCRIPTION — task, modality, domain, annotations, size" \
+    --hf-task image-classification
 ```
+
+`--bm25-top` is set automatically based on raw result count. Override with `--bm25-top N` if needed.
+Kaggle runs automatically if credentials are in `.env`, skips silently if not.
+All intermediate files saved to `data/`. Seen/rejected IDs persist automatically.
 
 ### Step 3 — Evaluate wave 1 results
 Read `data/filtered_results_wave1.json`. Ask yourself:
@@ -125,11 +87,18 @@ If results are good enough → skip to Step 5.
 If not → do Wave 2 with targeted new queries.
 
 ### Step 4 — Wave 2 (if needed), then Wave 3 (if needed)
-Same pattern, but:
-- New queries only — targeting the gaps identified
-- Exclude seen IDs via file (no shell substitution needed): `--exclude-ids-file data/seen_ids.txt`
-- Always pass `--rejected-ids-file data/rejected_ids.txt`
-- Output to `data/raw_results_wave2.json` / `data/filtered_results_wave2.json`
+Same single command, just increment `--wave` and use new targeted queries:
+
+```bash
+uv run scripts/search/run_wave.py \
+    --wave 2 \
+    --queries "new_targeted_q1,new_targeted_q2,..." \
+    --keywords "kw1,kw2,..." \
+    --goal "RICH DESCRIPTION" \
+    --hf-task image-classification
+```
+
+`run_wave.py` automatically excludes already-seen and rejected IDs. No extra flags needed.
 
 **After wave 3, stop regardless of results.**
 
@@ -165,13 +134,12 @@ Then ask: "Would you like to explore any further, or refine the search?"
 - Changing `OPENROUTER_MODEL` — NEVER. Fixed in `.env`.
 
 If you need to do something not covered by existing scripts — ask the user to add a new script instead of writing inline code.
-- Available utility scripts:
-  - `scripts/search/hf_bulk_search.py` — fetch from HuggingFace
-  - `scripts/search/kaggle_bulk_search.py` — fetch from Kaggle (same output format as HF)
-  - `scripts/search/semantic_filter.py` — full 6-stage filtering pipeline
-  - `scripts/search/update_seen_ids.py` — update seen_ids.txt after each bulk search
-  - `scripts/search/merge_results.py` — merge multiple raw result JSONs (HF + Kaggle)
-  - `scripts/search/merge_final.py` — merge filtered wave results into final output
+- Available scripts:
+  - `scripts/search/run_wave.py` — **PRIMARY**: runs full wave (HF+Kaggle+merge+filter) in one command
+  - `scripts/search/merge_final.py` — merge filtered results from all waves into final output
+  - `scripts/search/check_env.py` — check that API keys are configured
+  - Individual scripts (use only if run_wave.py is not enough):
+    - `hf_bulk_search.py`, `kaggle_bulk_search.py`, `merge_results.py`, `update_seen_ids.py`, `semantic_filter.py`
 - Working directory: /Users/andrejustinov/Desktop/Data_for_ML
 - Store all intermediate files in `data/`
 - **Never change OPENROUTER_MODEL** — it's fixed in `.env`
