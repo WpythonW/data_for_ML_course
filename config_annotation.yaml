@@ -1,0 +1,35 @@
+agent:
+  modality: text
+  confidence_threshold: 0.75
+
+task:
+  name: sentiment_classification
+  candidate_labels:
+    - positive
+    - negative
+    - neutral
+  text_col: text
+
+input:
+  path: data/raw/texts.csv
+
+output:
+  dir: data
+  labeled: data/labeled.csv
+  spec: data/annotation_spec.md
+  metrics: data/quality_metrics.json
+  labelstudio: data/labelstudio_import.json
+  low_confidence: data/low_confidence.csv
+
+labelstudio:
+  from_name: sentiment
+  to_name: text
+  label_config: |
+    <View>
+      <Text name="text" value="$text"/>
+      <Choices name="sentiment" toName="text" choice="single">
+        <Choice value="positive"/>
+        <Choice value="negative"/>
+        <Choice value="neutral"/>
+      </Choices>
+    </View>
