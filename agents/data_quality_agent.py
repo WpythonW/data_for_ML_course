@@ -45,15 +45,23 @@ class DataQualityAgent:
         print("[detect] Profiling dataset...", file=sys.stderr)
         report: dict = {"shape": {"rows": len(df), "cols": len(df.columns)}, "issues": {}}
 
-        # 1. Missing values
-        missing = df.isnull().sum()
-        missing_pct = (missing / len(df) * 100).round(2)
+        # Columns where 100% of values are null — unused modality slots, not real missing data
+        empty_cols = set(col for col in df.columns if df[col].isnull().all())
+        if empty_cols:
+            print(f"[detect] Skipping fully-null columns (unused modality): {sorted(empty_cols)}", file=sys.stderr)
+
+        # 1. Missing values — exclude fully-null columns
+        active_cols = [col for col in df.columns if col not in empty_cols]
+        active_df = df[active_cols]
+        missing = active_df.isnull().sum()
+        missing_pct = (missing / len(active_df) * 100).round(2)
         report["issues"]["missing"] = {
             "columns": {col: {"count": int(missing[col]), "pct": float(missing_pct[col])}
-                        for col in df.columns if missing[col] > 0},
-            "total_pct": round(float(df.isnull().mean().mean() * 100), 2),
+                        for col in active_df.columns if missing[col] > 0},
+            "total_pct": round(float(active_df.isnull().mean().mean() * 100), 2),
+            "skipped_empty_cols": sorted(empty_cols),
         }
-        print(f"[detect] Missing: {report['issues']['missing']['total_pct']}% overall", file=sys.stderr)
+        print(f"[detect] Missing: {report['issues']['missing']['total_pct']}% overall (excluding empty modality cols)", file=sys.stderr)
 
         # 2. Duplicates
         dup_count = int(df.duplicated().sum())
@@ -139,10 +147,12 @@ class DataQualityAgent:
             df = df[~df.duplicated(keep=False)].reset_index(drop=True)
         print(f"[fix] Duplicates: removed {before - len(df)} rows", file=sys.stderr)
 
-        # Step 2 — missing values
+        # Step 2 — missing values (skip fully-null columns — unused modality slots)
         missing_strategy = strategy.get("missing", "median")
+        empty_cols = set(col for col in df.columns if df[col].isnull().all())
         numeric_cols = df.select_dtypes(include=[np.number]).columns
-        cat_cols = df.select_dtypes(exclude=[np.number]).columns
+        numeric_cols = [c for c in numeric_cols if c not in empty_cols]
+        cat_cols = [c for c in df.select_dtypes(exclude=[np.number]).columns if c not in empty_cols]
         imputed = 0
 
         if missing_strategy == "drop_rows":
@@ -215,7 +225,11 @@ class DataQualityAgent:
         Compare before/after DataFrames across quality metrics.
         Returns a comparison DataFrame: metric | before | after | change.
         """
-        numeric_cols = df_before.select_dtypes(include=[np.number]).columns
+        # Exclude fully-null columns (unused modality slots) from comparison
+        empty_cols = set(col for col in df_before.columns if df_before[col].isnull().all())
+        active_before = df_before[[c for c in df_before.columns if c not in empty_cols]]
+        active_after = df_after[[c for c in df_after.columns if c not in empty_cols]]
+        numeric_cols = active_before.select_dtypes(include=[np.number]).columns
 
         rows = [
             {
@@ -227,9 +241,9 @@ class DataQualityAgent:
             },
             {
                 "metric": "missing_values",
-                "before": int(df_before.isnull().sum().sum()),
-                "after": int(df_after.isnull().sum().sum()),
-                "change": f"{int(df_after.isnull().sum().sum()) - int(df_before.isnull().sum().sum()):+d}",
+                "before": int(active_before.isnull().sum().sum()),
+                "after": int(active_after.isnull().sum().sum()),
+                "change": f"{int(active_after.isnull().sum().sum()) - int(active_before.isnull().sum().sum()):+d}",
                 "change_pct": "",
             },
             {
