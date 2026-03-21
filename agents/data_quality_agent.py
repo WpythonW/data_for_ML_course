@@ -300,11 +300,16 @@ def main():
     print(comparison.to_string(index=False))
 
     # Save
-    out_path = args.output or args.input.replace(".csv", "_clean.csv")
+    if args.output:
+        out_path = args.output
+    else:
+        stem = Path(args.input).stem
+        out_path = f"data/cleaned/{stem}_clean.csv"
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     df_clean.to_csv(out_path, index=False)
     print(f"\n[main] Saved cleaned data → {out_path}")
 
-    report_path = Path(out_path).parent / "quality_report.json"
+    report_path = Path("data/cleaned") / "quality_report.json"
     report_path.write_text(json.dumps(report, indent=2, default=str))
     print(f"[main] Quality report → {report_path}")
 

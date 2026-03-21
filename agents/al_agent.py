@@ -174,7 +174,7 @@ class ActiveLearningAgent:
     def report(
         self,
         history: list[dict],
-        output_path: str | Path = "data/learning_curve.png",
+        output_path: str | Path = "data/al/learning_curve.png",
         compare_history: list[dict] | None = None,
         compare_label: str = "random",
     ) -> None:
@@ -345,7 +345,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=20)
     parser.add_argument("--test-size", type=float, default=0.2, help="Fraction held out as test set")
     parser.add_argument("--compare", action="store_true", help="Also run random baseline for comparison")
-    parser.add_argument("--output-dir", default="data")
+    parser.add_argument("--output-dir", default="data/al")
     args = parser.parse_args()
 
     out = Path(args.output_dir)

@@ -290,9 +290,9 @@ class AnnotationAgent:
         text_col: str = "text",
         label_col: str = "label",
         confidence_col: str = "confidence",
-        output_path: str | Path = "data/labelstudio_import.json",
+        output_path: str | Path = "data/labeled/labelstudio_import.json",
         flag_low_confidence: bool = True,
-        low_confidence_path: str | Path = "data/low_confidence.csv",
+        low_confidence_path: str | Path = "data/labeled/low_confidence.csv",
     ) -> list[dict]:
         """
         Export DataFrame to LabelStudio import JSON format.
@@ -392,7 +392,7 @@ def main():
         help="Comma-separated candidate labels",
     )
     parser.add_argument("--confidence-threshold", type=float, default=0.75)
-    parser.add_argument("--output-dir", default="data", help="Directory for output files")
+    parser.add_argument("--output-dir", default="data/labeled", help="Directory for output files")
     parser.add_argument(
         "--reference-col",
         default=None,
