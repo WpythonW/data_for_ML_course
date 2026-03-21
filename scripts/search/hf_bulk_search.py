@@ -1,19 +1,17 @@
 """
-HuggingFace Bulk Dataset Search — deep metadata extraction.
-Fetches dataset metadata, tags, and descriptions across many queries.
-Saves rich raw results to JSON for downstream BM25 filtering.
+HuggingFace Bulk Dataset Search — async version.
+Fetches dataset metadata across many queries in parallel via asyncio + httpx.
 
 Usage:
     uv run scripts/search/hf_bulk_search.py \
-        --queries "car brand classification,vehicle make model,..." \
+        --queries "text classification,sentiment analysis,..." \
         --limit-per-query 100 \
         --output data/raw_results.json
 
-    # With HF API filters (narrows results server-side):
+    # With HF API filters:
     uv run scripts/search/hf_bulk_search.py \
-        --queries "car brand,vehicle make" \
-        --task-filter image-classification \
-        --modality-filter image \
+        --queries "sentiment,opinion" \
+        --task-filter text-classification \
         --output data/raw_results.json
 
     # Excluding already-seen datasets:
@@ -27,80 +25,85 @@ NOTE: Never use --fetch-cards here. Card fetching is done for finalists
 """
 
 import argparse
+import asyncio
 import json
-import sys
 import os
-import time
+import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
+HF_API_BASE = "https://huggingface.co/api/datasets"
 
-def fetch_dataset_card(api, dataset_id: str) -> str:
-    """Fetch full README/card content for a single dataset."""
+
+async def search_one_query(session, query: str, limit: int, filters: dict, token: str) -> list[dict]:
+    """Fetch datasets for a single query asynchronously."""
+    import httpx
+
+    params = {"search": query, "limit": limit, "full": "True"}
+    if filters.get("task"):
+        params["filter"] = filters["task"]
+    if filters.get("license"):
+        params["license"] = filters["license"]
+
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
     try:
-        from huggingface_hub import DatasetCard
-        raw_card = DatasetCard.load(dataset_id)
-        return str(raw_card)[:5000]
-    except Exception:
-        return ""
-
-
-def search_one_query(api, query: str, limit: int, filters: dict) -> list[dict]:
-    """Fetch datasets for a single query with metadata available in batch."""
-    results = []
-    try:
-        kwargs = {"search": query, "limit": limit}
-        # Apply server-side HF filters if provided — reduces API results immediately
-        if filters.get("task"):
-            kwargs["task_categories"] = filters["task"]
-        if filters.get("license"):
-            kwargs["license"] = filters["license"]
-
-        datasets = list(api.list_datasets(**kwargs))
-
-        for ds in datasets:
-            card = getattr(ds, "cardData", None) or {}
-            tags = ds.tags or []
-            # description comes free in batch — available for ~40% of datasets
-            description = getattr(ds, "description", None) or ""
-
-            corpus_text = " ".join([
-                ds.id,
-                description,
-                " ".join(tags),
-                card.get("license", ""),
-                " ".join(str(v) for v in card.get("task_categories", [])),
-                " ".join(str(v) for v in card.get("task_ids", [])),
-                str(card.get("pretty_name", "")),
-            ])
-
-            results.append({
-                "id": ds.id,
-                "name": ds.id.split("/")[-1],
-                "description": description[:1000],
-                "card_text": "",  # filled later for finalists only
-                "corpus_text": corpus_text,
-                "url": f"https://huggingface.co/datasets/{ds.id}",
-                "downloads": getattr(ds, "downloads", 0) or 0,
-                "likes": getattr(ds, "likes", 0) or 0,
-                "tags": tags,
-                "task_categories": card.get("task_categories", []),
-                "license": card.get("license", "unknown"),
-                "size_categories": card.get("size_categories", []),
-                "language": card.get("language", []),
-                "last_updated": str(ds.lastModified)[:10] if getattr(ds, "lastModified", None) else "unknown",
-                "platform": "huggingface",
-                "matched_queries": [query],
-            })
+        resp = await session.get(HF_API_BASE, params=params, headers=headers, timeout=30)
+        resp.raise_for_status()
+        datasets = resp.json()
     except Exception as e:
         print(f"  Warning: query '{query}' failed: {e}", file=sys.stderr)
+        return []
+
+    results = []
+    for ds in datasets:
+        ds_id = ds.get("id", "")
+        if not ds_id:
+            continue
+        card = ds.get("cardData") or {}
+        tags = ds.get("tags") or []
+        description = ds.get("description") or ""
+
+        license_val = card.get("license", "") or ""
+        if isinstance(license_val, list):
+            license_val = " ".join(license_val)
+        corpus_text = " ".join([
+            ds_id,
+            description,
+            " ".join(tags),
+            license_val,
+            " ".join(str(v) for v in card.get("task_categories", [])),
+            " ".join(str(v) for v in card.get("task_ids", [])),
+            str(card.get("pretty_name", "")),
+        ])
+
+        results.append({
+            "id": ds_id,
+            "name": ds_id.split("/")[-1],
+            "description": description[:1000],
+            "card_text": "",
+            "corpus_text": corpus_text,
+            "url": f"https://huggingface.co/datasets/{ds_id}",
+            "downloads": ds.get("downloads", 0) or 0,
+            "likes": ds.get("likes", 0) or 0,
+            "tags": tags,
+            "task_categories": card.get("task_categories", []),
+            "license": card.get("license", "unknown"),
+            "size_categories": card.get("size_categories", []),
+            "language": card.get("language", []),
+            "last_updated": str(ds.get("lastModified", ""))[:10] or "unknown",
+            "platform": "huggingface",
+            "matched_queries": [query],
+        })
     return results
 
 
 def deduplicate_and_merge(results: list[dict]) -> list[dict]:
-    """Deduplicate by id, merging matched_queries from duplicates."""
     seen: dict[str, dict] = {}
     for r in results:
         if r["id"] in seen:
@@ -112,31 +115,40 @@ def deduplicate_and_merge(results: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
+async def run_search(queries: list[str], limit: int, filters: dict, token: str) -> list[dict]:
+    import httpx
+
+    async with httpx.AsyncClient() as session:
+        tasks = [search_one_query(session, q, limit, filters, token) for q in queries]
+        results_per_query = await asyncio.gather(*tasks)
+
+    print(f"  Queries done: " + ", ".join(
+        f"'{q}' → {len(r)}" for q, r in zip(queries, results_per_query)
+    ), file=sys.stderr)
+
+    all_results = [item for sublist in results_per_query for item in sublist]
+    return all_results
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Bulk HuggingFace dataset search with optional server-side filters")
+    parser = argparse.ArgumentParser(description="Async bulk HuggingFace dataset search")
     parser.add_argument("--queries", required=True, help="Comma-separated search queries")
     parser.add_argument("--limit-per-query", type=int, default=100, help="Max datasets per query (default: 100)")
     parser.add_argument("--output", required=True, help="Output JSON file path")
-    parser.add_argument("--exclude-ids", default="",
-                        help="Comma-separated dataset IDs to exclude")
+    parser.add_argument("--exclude-ids", default="", help="Comma-separated dataset IDs to exclude")
     parser.add_argument("--exclude-ids-file", default="",
-                        help="File with dataset IDs to exclude, one per line (e.g. data/seen_ids.txt)")
-    # HF API server-side filters — applied before results are returned
-    parser.add_argument("--task-filter", default="",
-                        help="HF task_categories filter, e.g. 'image-classification' (server-side)")
-    parser.add_argument("--license-filter", default="",
-                        help="HF license filter, e.g. 'cc-by-4.0' (server-side)")
+                        help="File with dataset IDs to exclude, one per line")
+    parser.add_argument("--task-filter", default="", help="HF task_categories filter (server-side)")
+    parser.add_argument("--license-filter", default="", help="HF license filter (server-side)")
     args = parser.parse_args()
 
     try:
-        from huggingface_hub import HfApi
+        import httpx
     except ImportError:
-        print("Error: huggingface_hub not installed.", file=sys.stderr)
+        print("Error: httpx not installed. Run: uv add httpx", file=sys.stderr)
         sys.exit(1)
 
-    token = os.getenv("HF_TOKEN")
-    api = HfApi(token=token)
-
+    token = os.getenv("HF_TOKEN", "")
     queries = [q.strip() for q in args.queries.split(",") if q.strip()]
 
     exclude_ids = set(e.strip() for e in args.exclude_ids.split(",") if e.strip())
@@ -145,7 +157,7 @@ def main():
         if ids_path.exists():
             file_ids = set(line.strip() for line in ids_path.read_text().splitlines() if line.strip())
             exclude_ids |= file_ids
-            print(f"  Loaded exclude list from {args.exclude_ids_file}: {len(file_ids)} IDs")
+            print(f"  Loaded exclude list: {len(file_ids)} IDs")
 
     filters = {}
     if args.task_filter:
@@ -153,19 +165,11 @@ def main():
     if args.license_filter:
         filters["license"] = args.license_filter
 
-    print(f"Searching HuggingFace: {len(queries)} queries × {args.limit_per_query} results each")
+    print(f"Searching HuggingFace async: {len(queries)} queries × {args.limit_per_query} (parallel)")
     if filters:
         print(f"  Server-side filters: {filters}")
-    if exclude_ids:
-        print(f"  Excluding {len(exclude_ids)} already-seen dataset IDs")
 
-    all_results = []
-    for i, query in enumerate(queries, 1):
-        print(f"  [{i:>3}/{len(queries)}] '{query}'...", end=" ", flush=True)
-        results = search_one_query(api, query, args.limit_per_query, filters)
-        print(f"{len(results)} found")
-        all_results.extend(results)
-
+    all_results = asyncio.run(run_search(queries, args.limit_per_query, filters, token))
     unique = deduplicate_and_merge(all_results)
 
     if exclude_ids:

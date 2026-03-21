@@ -25,6 +25,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -52,9 +53,8 @@ def get_api_key() -> str:
     return key
 
 
-def openrouter_call(model: str, prompt: str, max_tokens: int = 2000, temperature: float = 0.1) -> str:
-    import requests
-    resp = requests.post(
+async def openrouter_call_async(session, model: str, prompt: str, max_tokens: int = 2000, temperature: float = 0.1) -> str:
+    resp = await session.post(
         OPENROUTER_URL,
         headers={**OPENROUTER_HEADERS, "Authorization": f"Bearer {get_api_key()}"},
         json={
@@ -67,6 +67,25 @@ def openrouter_call(model: str, prompt: str, max_tokens: int = 2000, temperature
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def openrouter_call(model: str, prompt: str, max_tokens: int = 2000, temperature: float = 0.1) -> str:
+    """Sync wrapper for backward compatibility."""
+    import httpx
+    with httpx.Client() as client:
+        resp = client.post(
+            OPENROUTER_URL,
+            headers={**OPENROUTER_HEADERS, "Authorization": f"Bearer {get_api_key()}"},
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 def parse_json_response(content: str) -> list | dict:
@@ -243,38 +262,34 @@ DATASETS:
 
 # ── Stage 3.5: Fetch full cards for datasets Haiku will investigate ──────────
 
-def fetch_cards_for_candidates(datasets: list[dict]) -> list[dict]:
-    """
-    Fetch full README cards for the reranked candidates before Haiku sees them.
-    These are already a narrow set (post-BM25 + post-OR-filter + post-OR-rerank),
-    so the number of requests is small (typically 20-60).
-    """
-    import time
+async def fetch_one_card(session, ds: dict, token: str) -> None:
+    """Fetch README card for one dataset, mutates ds in place."""
+    if ds.get("card_text"):
+        return
+    url = f"https://huggingface.co/datasets/{ds['id']}/resolve/main/README.md"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
     try:
-        from huggingface_hub import HfApi, DatasetCard
-    except ImportError:
-        print("  Warning: huggingface_hub not available, skipping card fetch", file=sys.stderr)
-        return datasets
-
-    token = os.getenv("HF_TOKEN")
-    api = HfApi(token=token)
-
-    print(f"  Fetching README cards for {len(datasets)} candidates...", end=" ", flush=True)
-    fetched = 0
-    for ds in datasets:
-        if ds.get("card_text"):
-            continue  # already have it
-        try:
-            card = DatasetCard.load(ds["id"])
-            ds["card_text"] = str(card)[:5000]
-            # update corpus_text too so BM25 boost is retroactively richer
+        resp = await session.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            ds["card_text"] = resp.text[:5000]
             ds["corpus_text"] = ds.get("corpus_text", "") + " " + ds["card_text"]
-            fetched += 1
-            time.sleep(0.05)
-        except Exception:
-            pass
+    except Exception:
+        pass
+
+
+async def fetch_cards_async(datasets: list[dict]) -> list[dict]:
+    import httpx
+    token = os.getenv("HF_TOKEN", "")
+    print(f"  Fetching README cards for {len(datasets)} candidates (async)...", end=" ", flush=True)
+    async with httpx.AsyncClient() as session:
+        await asyncio.gather(*[fetch_one_card(session, ds, token) for ds in datasets])
+    fetched = sum(1 for ds in datasets if ds.get("card_text"))
     print(f"fetched {fetched} new cards")
     return datasets
+
+
+def fetch_cards_for_candidates(datasets: list[dict]) -> list[dict]:
+    return asyncio.run(fetch_cards_async(datasets))
 
 
 # ── Stage 4: Haiku step 1 — select which to question, generate questions ──────
@@ -537,13 +552,19 @@ def main():
     print("\n[Stage 3] OpenRouter rerank...")
     datasets = openrouter_rerank(datasets, args.goal, or_model)
 
-    # ── Stage 3.5: Fetch full README cards for reranked candidates ──
-    print("\n[Stage 3.5] Fetching full README cards for reranked candidates...")
-    datasets = fetch_cards_for_candidates(datasets)
+    # ── Stage 3.5 + 4 in parallel: fetch cards AND Haiku step 1 ──
+    print("\n[Stage 3.5 + 4] Fetching cards & Haiku questions in parallel (async)...")
 
-    # ── Stage 4: Haiku step 1 — pick datasets to question ──
-    print("\n[Stage 4] Haiku: select datasets to investigate + generate questions...")
-    questions_map = haiku_generate_questions(datasets, args.goal, bm25_scores)
+    async def stages_3_5_and_4():
+        import httpx
+        token = os.getenv("HF_TOKEN", "")
+        async with httpx.AsyncClient() as session:
+            cards_task = fetch_cards_async(datasets)
+            haiku_task = asyncio.to_thread(haiku_generate_questions, datasets, args.goal, bm25_scores)
+            updated_datasets, questions_map = await asyncio.gather(cards_task, haiku_task)
+        return updated_datasets, questions_map
+
+    datasets, questions_map = asyncio.run(stages_3_5_and_4())
 
     # ── Stage 5: OpenRouter answers questions ──
     print("\n[Stage 5] OpenRouter: answer Haiku's questions...")

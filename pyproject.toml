@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "beautifulsoup4>=4.14.3",
+    "httpx>=0.28.1",
     "huggingface-hub>=1.6.0",
     "kaggle>=2.0.0",
     "matplotlib>=3.10.8",
