@@ -1,4 +1,5 @@
 ---
+model: claude-haiku-4-5-20251001
 name: dataset-searcher
 description: Expert ML dataset searcher and data collection agent. Finds datasets via HuggingFace, Kaggle, web search, REST APIs, and Playwright scraping. Combines multiple sources into a unified DataFrame. Generates DataCollectionAgent code, config.yaml, EDA notebook, and README. Launch when user asks to find/search/collect datasets.
 tools: Bash, Read, Write, Glob, WebSearch

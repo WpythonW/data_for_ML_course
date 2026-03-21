@@ -1,4 +1,5 @@
 ---
+model: claude-haiku-4-5-20251001
 name: data-quality
 description: Data quality detective and surgeon. Detects issues (missing values, duplicates, outliers, class imbalance) in tabular datasets. Fixes them with configurable strategies. Compares before/after. Generates EDA visualizations and Markdown notebook with strategy justification. Launch when user asks to analyze, clean, or audit a dataset.
 tools: Bash, Read, Write, Glob, WebSearch

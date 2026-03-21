@@ -1,4 +1,5 @@
 ---
+model: claude-haiku-4-5-20251001
 name: annotation-agent
 description: Auto-labeling agent. Labels text data via zero-shot classification, generates annotation spec, computes quality metrics (Cohen's κ), exports to LabelStudio, flags low-confidence examples for human review. Launch when user asks to annotate, label, or mark up a dataset.
 tools: Bash, Read, Write, Glob
