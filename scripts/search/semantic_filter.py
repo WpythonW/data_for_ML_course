@@ -476,6 +476,78 @@ CANDIDATES:
     return result
 
 
+# ── Stage 4 helper: enrich finalists with num_rows + size_mb ──────────────────
+
+async def _fetch_hf_size(session, ds_id: str, token: str) -> dict:
+    """Fetch num_rows + size_mb for a HuggingFace dataset via Dataset Viewer API."""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    try:
+        r = await session.get(
+            f"https://datasets-server.huggingface.co/size?dataset={ds_id}",
+            headers=headers,
+            timeout=10,
+        )
+        if not r.is_success:
+            return {}
+        stats = r.json().get("size", {}).get("dataset", {})
+        num_rows = stats.get("num_rows")
+        size_bytes = stats.get("num_bytes_original_files", 0)
+        return {
+            "num_rows": num_rows,
+            "size_mb": round(size_bytes / 1024**2, 2) if size_bytes else None,
+            "size_kb": round(size_bytes / 1024, 1) if size_bytes else None,
+        }
+    except Exception:
+        return {}
+
+
+async def _fetch_kaggle_size(session, ds_ref: str) -> dict:
+    """Fetch size_mb for a Kaggle dataset via dataset_list SDK.
+    num_rows is NOT available from Kaggle API — returns None.
+    ds_ref format: 'owner/name' (without 'kaggle:' prefix).
+    """
+    try:
+        import kaggle
+        kaggle.api.authenticate()
+        results = kaggle.api.dataset_list(search=ds_ref)
+        match = next((d for d in results if d.ref == ds_ref), None)
+        if not match:
+            return {}
+        total_bytes = match._total_bytes or 0
+        return {
+            "num_rows": None,  # Kaggle API never returns row count
+            "size_mb": round(total_bytes / 1024**2, 2) if total_bytes else None,
+            "size_kb": round(total_bytes / 1024, 1) if total_bytes else None,
+        }
+    except Exception:
+        return {}
+
+
+async def _enrich_sizes(datasets: list[dict], token: str) -> list[dict]:
+    """Parallel fetch num_rows + size_mb for all finalist datasets.
+    HF: uses Dataset Viewer API (/size endpoint) — returns num_rows + size.
+    Kaggle: uses SDK dataset_list — returns size only, num_rows always None.
+    """
+    import httpx
+    print("\n[Stage 4] Fetching sizes for finalists...", end=" ", flush=True)
+    async with httpx.AsyncClient() as session:
+        tasks = []
+        for ds in datasets:
+            ds_id = ds["id"]
+            if ds_id.startswith("kaggle:"):
+                ref = ds_id[len("kaggle:"):]
+                tasks.append(_fetch_kaggle_size(session, ref))
+            else:
+                tasks.append(_fetch_hf_size(session, ds_id, token))
+        results = await asyncio.gather(*tasks)
+    for ds, info in zip(datasets, results):
+        ds.update(info)
+    found = sum(1 for r in results if r.get("size_mb") is not None)
+    rows_found = sum(1 for r in results if r.get("num_rows") is not None)
+    print(f"{found}/{len(datasets)} sizes, {rows_found}/{len(datasets)} row counts resolved")
+    return datasets
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -549,8 +621,10 @@ def main():
     print("\n[Stage 3] OpenRouter rerank...")
     datasets = openrouter_rerank(datasets, args.goal, or_model)
 
-    # ── Stage 4: top-10 for human review ──
+    # ── Stage 4: enrich finalists with size_kb from HF API ──
     top10 = datasets[:10]
+    hf_token = os.getenv("HF_TOKEN", "")
+    top10 = asyncio.run(_enrich_sizes(top10, hf_token))
 
     _save_and_exit(top10, args.output, rejected_ids | new_rejected, args.rejected_ids_file)
 
@@ -573,7 +647,12 @@ def _save_and_exit(datasets: list[dict], output: str, all_rejected: set, rejecte
     for i, ds in enumerate(datasets, 1):
         score = ds.get("llm_relevance_score", "?")
         verify = " ⚠️ verify" if ds.get("needs_verification") else ""
-        print(f"{i:>2}. [{score}/10]{verify} {ds['id']}")
+        num_rows = ds.get("num_rows")
+        size_mb = ds.get("size_mb")
+        rows_str = f"{num_rows:,} rows" if num_rows is not None else "? rows"
+        size_str = f" | {size_mb} MB" if size_mb is not None else ""
+        size_str = f" | {rows_str}{size_str}"
+        print(f"{i:>2}. [{score}/10]{verify} {ds['id']}{size_str}")
         print(f"    {ds['url']}")
         print(f"    {ds.get('llm_reason', ds.get('or_one_line', ''))}")
         print()

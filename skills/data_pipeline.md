@@ -1,32 +1,32 @@
 ---
 name: data-pipeline
-description: Полный ML-пайплайн — сбор данных → чистка → разметка → active learning. Запускается одной командой, проходит все этапы автоматически с human-in-the-loop на ключевых точках.
+description: Full ML pipeline — data collection → cleaning → annotation → active learning. Runs all stages automatically with human-in-the-loop checkpoints.
 ---
 
 # Data Pipeline
 
-Мета-скилл, объединяющий все 4 агента в единый пайплайн подготовки ML-датасета.
+Meta-skill combining all 4 stages into a single ML dataset preparation pipeline.
 
-## Запуск
+## Usage
 
 ```
-/data-pipeline <тема> --classes "class1,class2,class3" --task "описание задачи"
+/data-pipeline <topic> --classes "class1,class2,class3" --task "task description"
 ```
 
-Примеры:
+Examples:
 ```
-/data-pipeline "отзывы на товары" --classes "positive,negative,neutral" --task "классификация тональности"
-/data-pipeline "новости" --classes "политика,спорт,технологии" --task "классификация тематики"
+/data-pipeline "product reviews" --classes "positive,negative,neutral" --task "sentiment classification"
+/data-pipeline "news" --classes "politics,sports,technology" --task "topic classification"
 ```
 
 ---
 
-## Поток данных
+## Data Flow
 
 ```
 ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
 │  1. Collector    │    │  2. Detective    │    │  3. Annotator    │    │  4. ActiveLearn  │
-│  Сбор данных     │───▶│  Чистка данных   │───▶│  Авторазметка    │───▶│  Оптимизация     │
+│  Data collection │───▶│  Data cleaning   │───▶│  Auto-labeling   │───▶│  Optimization    │
 └──────────────────┘    └──────────────────┘    └──────────────────┘    └──────────────────┘
         │                       │                       │                       │
         ▼                       ▼                       ▼                       ▼
@@ -36,70 +36,168 @@ data/eda/REPORT.md     data/comparison.json    data/labelstudio.json   data/al_s
 
 ---
 
-## Этап 0 — Setup
+## Stage 0 — Setup
 
-Проверить наличие `.env` с ключами:
+Check `.env` keys:
 ```bash
 uv run scripts/search/check_env.py
 ```
 
-Создать нужные директории:
+Create required directories:
 ```bash
 mkdir -p data/raw data/eda
 ```
 
 ---
 
-## Этап 1 — Dataset Collector
+## Stage 1 — Dataset Collector
 
-**Цель:** собрать данные минимум из 2 источников и объединить в unified schema.
+**Goal:** collect data from at least 2 sources and merge into a unified schema.
 
-**Действия:**
-1. Поиск датасетов на HuggingFace и Kaggle — запустить поисковую волну:
+**Actions:**
+1. Search HuggingFace and Kaggle — run a search wave:
 ```bash
 uv run scripts/search/run_wave.py \
     --wave 1 \
-    --queries "<тема>, <тема> dataset, <тема> classification" \
-    --keywords "<тема>, label, text" \
-    --goal "<описание задачи>"
+    --queries "<topic>, <topic> dataset, <topic> classification" \
+    --keywords "<topic>, label, text" \
+    --goal "<task description>"
 ```
-2. Найти второй источник — сайт для скрапинга или публичный API через WebSearch
-3. Написать скрапер или API-коллектор (по скиллу `skills/scrape.md` или `skills/fetch_api.md`)
-4. Объединить через `skills/merge_sources.md` → `data/raw/unified.csv`
-5. Запустить EDA
+2. Find a second source — a website to scrape or a public API (use WebSearch)
+3. Write a scraper or API collector (see `skills/scrape.md` or `skills/fetch_api.md`)
+
+> **⚠️ Every inline script must load keys before importing HF / Kaggle / OpenRouter:**
+> ```python
+> from dotenv import load_dotenv; load_dotenv()
+> import os
+> os.environ.setdefault('HF_TOKEN', os.getenv('HF_TOKEN', ''))
+> os.environ.setdefault('KAGGLE_USERNAME', os.getenv('KAGGLE_USERNAME', ''))
+> os.environ.setdefault('KAGGLE_KEY', os.getenv('KAGGLE_KEY', ''))
+> ```
+> Without this, libraries fall back to unauthenticated mode even when keys are in `.env`.
+
+> **⚠️ Never use `load_dataset()` to count rows — it downloads the full dataset.**
+> Use it only when you actually need the data.
+>
+> **HuggingFace — размер без скачивания** (Dataset Viewer `/size` endpoint):
+> ```python
+> import requests
+> token = os.getenv('HF_TOKEN', '')
+> headers = {"Authorization": f"Bearer {token}"} if token else {}
+>
+> def hf_dataset_size(dataset_id: str) -> dict:
+>     url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
+>     r = requests.get(url, headers=headers, timeout=10)
+>     if not r.ok:
+>         return {"num_rows": None, "size_mb": None}
+>     stats = r.json().get("size", {}).get("dataset", {})
+>     return {
+>         "num_rows": stats.get("num_rows"),          # ✅ точное число строк
+>         "size_mb": round(stats.get("num_bytes_original_files", 0) / 1024**2, 2),  # ✅
+>     }
+> # Если "partial": true в ответе — датасет слишком большой, num_rows неполный
+> ```
+>
+> **⚠️ HuggingFace — загрузка данных: используй `load_dataset()` или Parquet, НЕ Viewer `/rows`**
+>
+> Viewer API (`/rows?offset=...&length=100`) пагинирует по 100 строк и попадает в Hub API
+> rate-limit (1 000 req/5 мин). Для 10 000 строк это 100 запросов — гарантированный 429.
+>
+> ✅ **Метод 1 — `load_dataset`** (рекомендуется, скачивает всё одним запросом):
+> ```python
+> from dotenv import load_dotenv; load_dotenv()
+> import os
+> os.environ.setdefault('HF_TOKEN', os.getenv('HF_TOKEN', ''))
+> from datasets import load_dataset
+>
+> ds = load_dataset("dataset/name", token=os.environ.get('HF_TOKEN'))
+> # ds["train"], ds["test"], ds["validation"]
+> ```
+>
+> ✅ **Метод 2 — прямой Parquet** (если нужен pandas без `datasets`):
+> ```python
+> import requests, pandas as pd, io
+> TOKEN = os.getenv('HF_TOKEN', '')
+> headers = {'Authorization': f'Bearer {TOKEN}'}
+>
+> # 1. Получить URL файлов
+> urls = requests.get(
+>     'https://huggingface.co/api/datasets/<owner>/<name>/parquet',
+>     headers=headers,
+> ).json()
+> # urls["default"]["train"] → список URL parquet-файлов
+>
+> # 2. Скачать через requests + BytesIO (НЕ через storage_options — не работает)
+> r = requests.get(urls["default"]["train"][0], headers=headers, timeout=60)
+> df = pd.read_parquet(io.BytesIO(r.content))
+> ```
+>
+> ❌ **Никогда не используй Viewer `/rows` для загрузки данных** — только для превью.
+>
+> **Kaggle** — `num_rows` API **не отдаёт совсем**. Размер через `_total_bytes`:
+> ```python
+> import kaggle
+> kaggle.api.authenticate()
+>
+> def kaggle_dataset_size(owner: str, name: str) -> dict:
+>     # ВАЖНО: search=f"{owner}/{name}" — полный ref, не только name!
+>     results = kaggle.api.dataset_list(search=f"{owner}/{name}")
+>     match = next((d for d in results if d.ref == f"{owner}/{name}"), None)
+>     if not match:
+>         return {"num_rows": None, "size_mb": None}
+>     total_bytes = match._total_bytes or 0
+>     return {
+>         "num_rows": None,   # ❌ Kaggle API не возвращает num_rows никогда
+>         "size_mb": round(total_bytes / 1024**2, 2),  # ✅
+>     }
+> ```
+> Если `num_rows` недоступен — пиши `?` в таблице источников. **Не скачивай ради счётчика.**
+
+4. Merge sources via `skills/merge_sources.md` → `data/raw/unified.csv`
+5. Run EDA
 
 **⏸ HUMAN CHECKPOINT #1:**
 ```
-## Найденные источники
+## Sources Found
 
-### Датасеты (HuggingFace / Kaggle):
-| # | Название | Размер | Лицензия | Почему подходит |
-|---|----------|--------|----------|-----------------|
-| 1 | ...      | ...    | ...      | ...             |
+### Datasets (HuggingFace / Kaggle):
+> **Show ALL candidates from the search results — minimum 7 datasets. Do NOT pre-filter or pick for the user.**
 
-### Второй источник:
-| # | Тип | URL / Название | ~Строк |
-|---|-----|----------------|--------|
-| 2 | scrape/api | ... | ... |
+| # | Name | Rows | Size (MB) | License | Why it fits |
+|---|------|------|-----------|---------|-------------|
+| 1 | [name](url) | 4,864 | 0.3 MB | CC-BY | ... |
 
-Подтверждаешь эти источники? Или заменить что-то? [да / укажи замену]
+> **Reliability rules:**
+> - Rows from HF Dataset Viewer API → exact, no qualifier needed.
+> - Rows from Kaggle API → never available; write `? (unreliable)`.
+> - Size from HF Viewer → exact. Size from Kaggle metadata → add `(~approx)`.
+> - If `"partial": true` in HF response → rows are partial, write `~N (partial)`.
+> - **Always include a clickable link to the dataset.**
+> - Never leave Rows or Size as bare `?` — explain WHY it's unknown.
+
+### Second source:
+| # | Type | URL / Name | ~Rows |
+|---|------|------------|-------|
+| 2 | scrape/api | [name](url) | ~N or ? (unreliable) |
+
+Confirm these sources? Or replace something? [yes / specify replacement]
 ```
 
-**После подтверждения:**
-- Скачать/собрать данные
-- Применить unified schema: `text, label, source, collected_at`
-- Сохранить `data/raw/unified.csv`
-- Запустить EDA → `data/eda/REPORT.md`
+**After confirmation:**
+- Download / collect data
+- Apply unified schema: `text, label, source, collected_at`
+- Save to `data/raw/unified.csv`
+- Run EDA → `data/eda/REPORT.md`
 
 ---
 
-## Этап 2 — Data Detective
+## Stage 2 — Data Detective
 
-**Цель:** найти и исправить проблемы качества данных.
+**Goal:** find and fix data quality issues.
 
-**Вход:** `data/raw/unified.csv`
+**Input:** `data/raw/unified.csv`
 
-**Действия — запустить все детекторы:**
+**Actions — run all detectors:**
 ```bash
 uv run scripts/quality/profile.py --input data/raw/unified.csv
 uv run scripts/quality/detect_missing.py --input data/raw/unified.csv --output data/missing.json
@@ -110,56 +208,55 @@ uv run scripts/quality/detect_imbalance.py --input data/raw/unified.csv --label 
 
 **⏸ HUMAN CHECKPOINT #2:**
 ```
-## Найденные проблемы качества
+## Data Quality Issues Found
 
-| Проблема | Кол-во | % | Серьёзность |
-|----------|--------|---|-------------|
-| Пропуски | ...    |   | низкая/средняя/высокая |
-| Дубликаты | ...   |   | |
-| Выбросы  | ...    |   | |
-| Дисбаланс | ...   |   | |
+| Issue | Count | % | Severity |
+|-------|-------|---|----------|
+| Missing values | ... | | low/medium/high |
+| Duplicates | ... | | |
+| Outliers | ... | | |
+| Imbalance | ... | | |
 
-### Доступные стратегии:
-- **aggressive** — удалить пропуски, дубли, выбросы (IQR). Меньше данных, чище.
-- **conservative** — заполнить пропуски, оставить выбросы. Больше данных.
-- **balanced** — удалить дубли, заполнить пропуски медианой, обрезать экстремальные выбросы (z>3). Рекомендуется.
+### Available strategies:
+- **aggressive** — drop missing, duplicates, outliers (IQR). Less data, cleaner.
+- **conservative** — fill missing, keep outliers. More data.
+- **balanced** — drop duplicates, fill missing with median, trim extreme outliers (z>3). Recommended.
 
-Какую стратегию применить? [aggressive / conservative / balanced]
+Which strategy to apply? [aggressive / conservative / balanced]
 ```
 
-**После подтверждения:**
+**After confirmation:**
 ```bash
-# Применить шаг за шагом
 uv run scripts/quality/fix_duplicates.py --input data/raw/unified.csv --keep first --output data/step1.csv
-uv run scripts/quality/fix_missing.py --input data/step1.csv --strategy <выбор> --output data/step2.csv
-uv run scripts/quality/fix_outliers.py --input data/step2.csv --strategy <выбор> --output data/cleaned.csv
+uv run scripts/quality/fix_missing.py --input data/step1.csv --strategy <choice> --output data/step2.csv
+uv run scripts/quality/fix_outliers.py --input data/step2.csv --strategy <choice> --output data/cleaned.csv
 uv run scripts/quality/compare.py --before data/raw/unified.csv --after data/cleaned.csv --output data/comparison.json
 ```
-- Показать сравнительный отчёт до/после
+- Show before/after comparison report
 
 ---
 
-## Этап 3 — Annotation Agent
+## Stage 3 — Annotation Agent
 
-**Цель:** автоматически разметить данные, сгенерировать спецификацию, экспортировать в LabelStudio.
+**Goal:** auto-label data, generate annotation spec, export to LabelStudio.
 
-**Вход:** `data/cleaned.csv`
+**Input:** `data/cleaned.csv`
 
 **⏸ HUMAN CHECKPOINT #3:**
 ```
-## Настройки авторазметки
+## Auto-labeling Settings
 
-- Файл: data/cleaned.csv
-- Строк: N
-- Классы: <classes>
-- Задача: <task>
-- Модель: cross-encoder/nli-MiniLM2-L6-H768 (~120MB)
-- Порог уверенности: 0.75 (ниже → ручная разметка)
+- File: data/cleaned.csv
+- Rows: N
+- Classes: <classes>
+- Task: <task>
+- Model: cross-encoder/nli-MiniLM2-L6-H768 (~120MB)
+- Confidence threshold: 0.75 (below → manual review)
 
-Размечаем? [да / изменить классы]
+Proceed with labeling? [yes / change classes]
 ```
 
-**После подтверждения:**
+**After confirmation:**
 ```bash
 uv run agents/annotation_agent.py \
     --input data/cleaned.csv \
@@ -169,32 +266,32 @@ uv run agents/annotation_agent.py \
     --output-dir data
 ```
 
-- Показать распределение меток и confidence
-- Передать `data/annotation_spec.md` однокурснику для ручной разметки выборки
-- Экспорт в LabelStudio: `data/labelstudio_import.json`
-- Флаги низкой уверенности: `data/low_confidence.csv`
+- Show label distribution and confidence scores
+- Share `data/annotation_spec.md` for manual review of a sample
+- Export to LabelStudio: `data/labelstudio_import.json`
+- Low-confidence flags: `data/low_confidence.csv`
 
 ---
 
-## Этап 4 — Active Learner
+## Stage 4 — Active Learner
 
-**Цель:** показать, сколько меток можно сэкономить через entropy vs random.
+**Goal:** show how many labels can be saved with entropy vs random sampling.
 
-**Вход:** `data/labeled.csv`
+**Input:** `data/labeled.csv`
 
 **⏸ HUMAN CHECKPOINT #4:**
 ```
-## Настройки Active Learning
+## Active Learning Settings
 
-- Стартовый набор: 50 примеров
-- Итераций: 5 × 20 примеров = 100 дополнительных меток
-- Стратегии: entropy (умный) vs random (baseline)
-- Модель: LogisticRegression + TF-IDF
+- Seed set: 50 examples
+- Iterations: 5 × 20 examples = 100 additional labels
+- Strategies: entropy (smart) vs random (baseline)
+- Model: LogisticRegression + TF-IDF
 
-Запускаем? [да / изменить параметры]
+Proceed? [yes / change parameters]
 ```
 
-**После подтверждения:**
+**After confirmation:**
 ```bash
 uv run agents/al_agent.py \
     --input data/labeled.csv \
@@ -206,55 +303,57 @@ uv run agents/al_agent.py \
     --output-dir data
 ```
 
-- Показать learning curves (entropy vs random на одном графике)
-- Показать savings: сколько меток сэкономлено
+- Show learning curves (entropy vs random on one plot)
+- Show savings: how many labels were saved
 
 ---
 
-## Итоговый отчёт
+## Final Report
 
-После завершения всех этапов показать сводку:
+After all stages complete, show summary:
 
 ```
-## Пайплайн завершён
+## Pipeline Complete
 
-### Этап 1: Dataset Collector
-- Источники: HF:<название> + scrape/api:<url>
-- Строк собрано: N
-- Файл: data/raw/unified.csv
+### Stage 1: Dataset Collector
+- Sources: HF:<name> + scrape/api:<url>
+- Rows collected: N
+- File: data/raw/unified.csv
 - EDA: data/eda/REPORT.md
 
-### Этап 2: Data Detective
-- Стратегия: <выбранная>
-- До: N строк → После: M строк (-X%)
-- Файл: data/cleaned.csv
+### Stage 2: Data Detective
+- Strategy: <chosen>
+- Before: N rows → After: M rows (-X%)
+- File: data/cleaned.csv
 
-### Этап 3: Annotation Agent
-- Размечено: M строк
-- Confidence среднее: X
-- Флаги для ручной проверки: K строк
-- Спецификация: data/annotation_spec.md
+### Stage 3: Annotation Agent
+- Labeled: M rows
+- Avg confidence: X
+- Flagged for manual review: K rows
+- Spec: data/annotation_spec.md
 - LabelStudio: data/labelstudio_import.json
 
-### Этап 4: Active Learner
-- Entropy F1: X при 150 метках
-- Random F1: Y при 150 метках
-- Сэкономлено: N меток (P%) vs random baseline
-- График: data/learning_curve.png
+### Stage 4: Active Learner
+- Entropy F1: X at 150 labels
+- Random F1: Y at 150 labels
+- Saved: N labels (P%) vs random baseline
+- Plot: data/learning_curve.png
 
-### Готовые файлы для ML:
-- data/labeled.csv — размеченный датасет
-- data/annotation_spec.md — спецификация классов
-- data/learning_curve.png — кривые обучения
+### Ready ML files:
+- data/labeled.csv — labeled dataset
+- data/annotation_spec.md — class specification
+- data/learning_curve.png — learning curves
 ```
 
 ---
 
-## Правила
+## Rules
 
-1. Идти строго по этапам: 1 → 2 → 3 → 4
-2. На каждом checkpoint ждать подтверждения пользователя
-3. Передавать данные автоматически: выход N = вход N+1
-4. Показывать прогресс: `[Этап X/4] Название...`
-5. При ошибке — показать проблему и предложить решение, не прерывать пайплайн
-6. Всегда использовать `uv run`, никогда не использовать `python` напрямую
+1. Follow stages strictly: 1 → 2 → 3 → 4
+2. Wait for user confirmation at each checkpoint
+3. Pass data automatically: output of stage N = input of stage N+1
+4. Show progress: `[Stage X/4] Name...`
+5. On error — show the problem and suggest a fix, do not abort the pipeline
+6. Always use `uv run`, never call `python` directly
+7. **All datasets merged into `unified.csv` MUST share the same domain and task.** Never mix datasets from different tasks (e.g. topic classification + sentiment analysis). If sources cover different domains, pick ONE or ask the user to choose before merging.
+8. **`load_dotenv()` in `/tmp/` scripts requires an absolute path:** `load_dotenv('/Users/andrejustinov/Desktop/Data_for_ML/.env')`. Without it, keys are empty and HF/Kaggle calls fail with auth errors.

@@ -64,8 +64,43 @@ uv run agents/annotation_agent.py \
 
 ---
 
+## After labeling — print metrics summary
+
+Always print this block after `auto_label` completes:
+
+```python
+import pandas as pd, json
+
+df = pd.read_csv('data/labeled.csv')
+metrics = json.load(open('data/quality_metrics.json'))
+
+total = len(df)
+high_conf = (df['confidence'] >= 0.75).sum()
+low_conf  = total - high_conf
+
+print("=== Auto-label Results ===")
+print(f"Total labeled     : {total}")
+print(f"High confidence   : {high_conf} ({100*high_conf/total:.1f}%)  ← reliable, use as-is")
+print(f"Flagged for review: {low_conf}  ({100*low_conf/total:.1f}%)  ← in data/low_confidence.csv")
+print(f"Confidence mean   : {metrics['confidence_mean']:.3f}")
+print()
+print("Label distribution:")
+for label, pct in metrics['label_dist'].items():
+    bar = '█' * int(pct * 30)
+    print(f"  {label:15s} {metrics['label_counts'][label]:5d}  ({pct*100:.1f}%)  {bar}")
+```
+
+**Interpret the output:**
+- `confidence_mean > 0.75` → model fits the domain well
+- `confidence_mean < 0.65` → likely language/domain mismatch — consider multilingual model or OpenRouter LLM
+- `flagged > 50%` → too many uncertain examples — lower threshold OR fix class definitions
+- Skewed label distribution (one class > 80%) → classes overlap or are ill-defined
+
+---
+
 ## Rules
 - Default confidence threshold: 0.75
 - Flagged rows go to `data/low_confidence.csv` for human review (human-in-the-loop)
-- Model loads ~1.6GB on first run — subsequent runs use cache
+- Model loads ~120MB on first run — subsequent runs use cache
 - Use `device=0` for GPU, `device=-1` for CPU
+- Always run `check_quality` and print metrics after `auto_label` — see `skills/check_quality.md`

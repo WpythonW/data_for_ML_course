@@ -65,6 +65,12 @@ def main():
     parser.add_argument("--bm25-top", type=int, default=0,
                         help="BM25 top-N (0 = auto based on raw count)")
     parser.add_argument("--no-kaggle", action="store_true", help="Skip Kaggle search")
+    parser.add_argument("--verify", action="store_true",
+                        help="After filtering, fetch sample rows and verify each finalist with LLM")
+    parser.add_argument("--verify-min-pass", type=int, default=2,
+                        help="Min datasets that must pass verification (default: 2)")
+    parser.add_argument("--verify-sample-size", type=int, default=5,
+                        help="Rows to fetch per dataset for verification (default: 5)")
     args = parser.parse_args()
 
     n = args.wave
@@ -75,8 +81,15 @@ def main():
     raw_kaggle  = data / f"raw_kaggle_wave{n}.json"
     raw_merged  = data / f"raw_results_wave{n}.json"
     filtered    = data / f"filtered_results_wave{n}.json"
+    verified    = data / f"verified_results_wave{n}.json"
     seen_file   = data / "seen_ids.txt"
     rejected_file = data / "rejected_ids.txt"
+
+    # ── 0. Reset seen/rejected IDs before each wave ──
+    for f in (seen_file, rejected_file):
+        if f.exists():
+            f.write_text("")
+            print(f"  Cleared {f} (fresh search)")
 
     # ── 1. HuggingFace bulk search ──
     hf_cmd = [
@@ -98,6 +111,8 @@ def main():
     try:
         hf_count = len(json.load(open(raw_hf)))
         print(f"\n  HF raw results: {hf_count} datasets")
+    except Exception:
+        pass
 
     # ── 2. Kaggle bulk search ──
     inputs_for_merge = [str(raw_hf)]
@@ -168,8 +183,26 @@ def main():
     if not run(filter_cmd, f"Wave {n}: Filter pipeline"):
         sys.exit(1)
 
+    # ── 7. Sample verification (optional) ──
+    if args.verify:
+        verify_cmd = [
+            "uv", "run", str(SCRIPTS / "verify_samples.py"),
+            "--input", str(filtered),
+            "--goal", args.goal,
+            "--output", str(verified),
+            "--rejected-ids-file", str(rejected_file),
+            "--min-pass", str(args.verify_min_pass),
+            "--sample-size", str(args.verify_sample_size),
+        ]
+        result = subprocess.run(verify_cmd)
+        if result.returncode == 2:
+            print(f"\n⚠ Too few datasets passed verification — consider running wave {n+1} with new queries.")
+        final_output = verified
+    else:
+        final_output = filtered
+
     print(f"\n{'='*60}")
-    print(f"Wave {n} complete. Results: {filtered}")
+    print(f"Wave {n} complete. Results: {final_output}")
     print(f"{'='*60}")
 
 

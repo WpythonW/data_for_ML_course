@@ -82,6 +82,18 @@ async def search_one_query(session, query: str, limit: int, filters: dict, token
             str(card.get("pretty_name", "")),
         ])
 
+        # Extract dataset size in KB from cardData.dataset_info if available
+        size_kb = None
+        dataset_info = card.get("dataset_info") or {}
+        if isinstance(dataset_info, dict):
+            size_bytes = dataset_info.get("dataset_size") or dataset_info.get("size_in_bytes")
+            if size_bytes:
+                size_kb = round(size_bytes / 1024, 1)
+        elif isinstance(dataset_info, list) and dataset_info:
+            size_bytes = dataset_info[0].get("dataset_size") or dataset_info[0].get("size_in_bytes")
+            if size_bytes:
+                size_kb = round(size_bytes / 1024, 1)
+
         results.append({
             "id": ds_id,
             "name": ds_id.split("/")[-1],
@@ -95,6 +107,7 @@ async def search_one_query(session, query: str, limit: int, filters: dict, token
             "task_categories": card.get("task_categories", []),
             "license": card.get("license", "unknown"),
             "size_categories": card.get("size_categories", []),
+            "size_kb": size_kb,
             "language": card.get("language", []),
             "last_updated": str(ds.get("lastModified", ""))[:10] or "unknown",
             "platform": "huggingface",

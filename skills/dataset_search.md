@@ -19,7 +19,9 @@ User goal (natural language)
         ↓  hundreds of datasets with descriptions, tags, card text
 [3] semantic_filter.py — BM25 (queries+keywords) → LLM ranking
         ↓  top-N final datasets with reasons
-[4] Evaluate → search more if needed → present to user
+[4] verify_samples.py — fetch real rows → LLM checks language/classes/task
+        ↓  datasets that fail → rejected_ids.txt → auto re-search if too few pass
+[5] Evaluate → search more if needed → present to user
 ```
 
 ---
@@ -112,7 +114,43 @@ Do NOT pass `--llm-top` — Haiku decides the final count itself.
 
 ---
 
-## Step 4 — Evaluate and Decide
+## Step 4 — Verify with Real Samples
+
+After filtering, run sample verification to catch mismatches (wrong language, wrong task, etc.) that metadata alone misses:
+
+```bash
+uv run scripts/search/verify_samples.py \
+    --input data/filtered_results_wave1.json \
+    --goal "text classification, Russian or English, 2-4 classes, 1k-10k rows" \
+    --output data/verified_results_wave1.json \
+    --rejected-ids-file data/rejected_ids.txt \
+    --min-pass 2 \
+    --sample-size 5
+```
+
+Or automatically as part of `run_wave.py` by adding `--verify`:
+
+```bash
+uv run scripts/search/run_wave.py \
+    --wave 1 \
+    --queries "..." \
+    --keywords "..." \
+    --goal "..." \
+    --verify \
+    --verify-min-pass 2
+```
+
+**What it checks per dataset:**
+- Fetches 15 real rows via Dataset Viewer API (HF) or download (Kaggle)
+- Asks LLM: does language / num_classes / task match the goal?
+- `PASS` → kept in output | `FAIL` → added to `rejected_ids.txt`
+- If fewer than `--min-pass` pass → exit code 2 → `run_wave.py` warns to run next wave
+
+> **Why this matters:** metadata cards are often empty or misleading (e.g. dataset titled "news classification" but text is Indonesian, not English).
+
+---
+
+## Step 5 — Evaluate and Decide
 
 After filtering, read `data/filtered_results.json` and evaluate:
 
@@ -136,17 +174,97 @@ After filtering, read `data/filtered_results.json` and evaluate:
 
 ---
 
-## Step 5 — Present Results
+## Step 5b — Fetch Row Count and Size WITHOUT Downloading
+
+**Never use `load_dataset()` just to count rows — it downloads the full dataset.**
+
+Use the HuggingFace Dataset Viewer `/size` endpoint instead:
+
+```python
+from dotenv import load_dotenv; load_dotenv()
+import os, requests
+
+os.environ.setdefault('HF_TOKEN', os.getenv('HF_TOKEN', ''))
+token = os.getenv('HF_TOKEN', '')
+headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+def hf_dataset_size(dataset_id: str) -> dict:
+    url = f"https://datasets-server.huggingface.co/size?dataset={dataset_id}"
+    r = requests.get(url, headers=headers, timeout=10)
+    if not r.ok:
+        return {"num_rows": None, "size_mb": None}
+    data = r.json()
+    partial = data.get("partial", False)
+    stats = data.get("size", {}).get("dataset", {})
+    rows = stats.get("num_rows")
+    return {
+        "num_rows": f"~{rows} (partial)" if partial else rows,
+        "size_mb": round(stats.get("num_bytes_parquet_files", 0) / 1024**2, 2),
+    }
+```
+
+- Works for any dataset compatible with the Dataset Viewer (supports parquet export)
+- If response contains `"partial": true` — dataset is too large to fully index; rows are approximate
+- For Kaggle datasets: use `kaggle.api.dataset_list(search=...)` — returns `_total_bytes`, no row count
+
+---
+
+## Step 5c — Download Dataset Data (when you need actual rows)
+
+**⚠️ Never use Viewer API (`/rows?offset=...`) to download data — it paginates by 100 rows,
+hits the Hub API rate-limit (1 000 req/5 min), and causes 429 errors for any dataset > 1k rows.**
+
+✅ **Method 1 — `load_dataset`** (recommended, single request, auto-retry on 429):
+```python
+from dotenv import load_dotenv; load_dotenv()
+import os
+os.environ.setdefault('HF_TOKEN', os.getenv('HF_TOKEN', ''))
+from datasets import load_dataset
+
+ds = load_dataset("owner/name", token=os.environ.get('HF_TOKEN'))
+# ds["train"], ds["test"], ds["validation"]
+```
+
+✅ **Method 2 — direct Parquet** (if you need pandas without the `datasets` library):
+```python
+import requests, pandas as pd, io
+TOKEN = os.getenv('HF_TOKEN', '')
+headers = {'Authorization': f'Bearer {TOKEN}'}
+
+# Step 1: get parquet file URLs
+urls = requests.get(
+    'https://huggingface.co/api/datasets/<owner>/<name>/parquet',
+    headers=headers,
+).json()
+# urls["default"]["train"] → list of parquet URLs
+
+# Step 2: download via requests + BytesIO (do NOT use storage_options — broken in pandas)
+r = requests.get(urls["default"]["train"][0], headers=headers, timeout=60)
+df = pd.read_parquet(io.BytesIO(r.content))
+```
+
+❌ **Never use Viewer `/rows` to download data** — for preview only.
+
+---
+
+## Step 6 — Present Results
 
 ```
 ## Top Datasets Found
 
-1. **[dataset-name](url)** — Relevance: 9/10 ⚠️ verify
-   Downloads: 12,500 | License: CC-BY-4.0 | Size: 10K–100K
+1. **[dataset-name](url)** — Relevance: 9/10
+   Downloads: 12,500 | License: CC-BY-4.0 | Rows: 5,000 | Size: 1.2 MB
    Why it fits: <llm_reason>
-
-2. ...
 ```
+
+**Reliability rules for Rows and Size — ALWAYS apply:**
+- HF Dataset Viewer API returns exact rows → show as-is: `5,000`
+- HF Viewer with `"partial": true` → show as: `~5,000 (partial)`
+- Kaggle API never returns rows → show as: `? (unreliable — Kaggle API)`
+- Size from HF Viewer (parquet bytes) → exact, no qualifier
+- Size from Kaggle `_total_bytes` metadata → show as: `~37 MB (approx)`
+- **Always include a clickable link. Never bare `?` — explain why unknown.**
+- Do NOT use `load_dataset()` to count rows — downloads everything.
 
 Then ask: "Would you like to explore any of these further, search more sources (Kaggle, TCIA), or refine the search?"
 
@@ -160,6 +278,7 @@ Then ask: "Would you like to explore any of these further, search more sources (
 | `data/filtered_results.json` | Final ranked results |
 | `scripts/search/hf_bulk_search.py` | Bulk search with rich metadata |
 | `scripts/search/semantic_filter.py` | BM25 + LLM filter |
+| `scripts/search/verify_samples.py` | Fetch real rows + LLM verify language/classes/task |
 | `.env` | `HF_TOKEN`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` |
 
 ---
