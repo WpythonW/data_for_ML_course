@@ -247,8 +247,21 @@ uv run agents/al_agent.py \
 │   └── al_experiment.ipynb        # AL эксперимент
 │
 ├── data/
-│   └── raw/                       # Сырые данные
+│   ├── raw/                       # Сырые данные (unified.csv)
+│   ├── cleaned/                   # Очищенные данные
+│   ├── labeled/                   # Размеченные данные + LabelStudio экспорт
+│   └── al/                        # AL история и learning_curve.png
 │
+├── models/
+│   ├── al_pipeline.joblib         # Обученная TF-IDF + LogReg модель
+│   └── label_encoder.joblib       # LabelEncoder
+│
+├── reports/
+│   ├── quality_report.md          # Отчёт по сбору и очистке
+│   ├── annotation_report.md       # Отчёт по разметке + HITL
+│   └── al_report.md               # Отчёт по active learning
+│
+├── run_pipeline.py                # Единая точка запуска (uv run run_pipeline.py)
 ├── config_annotation.yaml         # Конфиг источников данных
 ├── pyproject.toml                 # Зависимости (uv)
 └── .env.example                   # Шаблон API ключей
@@ -275,3 +288,98 @@ uv sync
 - [uv](https://docs.astral.sh/uv/)
 - [Claude Code](https://docs.anthropic.com/claude-code)
 - OpenRouter API ключ
+
+---
+
+## Финальный пайплайн
+
+Запускается одной командой:
+
+```bash
+uv run run_pipeline.py
+```
+
+Пайплайн последовательно вызывает все 4 агента с human-in-the-loop паузами между этапами.
+
+---
+
+## Финальный отчёт
+
+### 1. Описание задачи и датасета
+
+**Задача:** классификация тональности финансовых новостей (3 класса: negative / neutral / positive).
+
+**Источники данных (3 датасета HuggingFace):**
+
+| Датасет | Строк | Лицензия |
+|---------|-------|----------|
+| [zeroshot/twitter-financial-news-sentiment](https://huggingface.co/datasets/zeroshot/twitter-financial-news-sentiment) | 9,543 (train) | MIT |
+| [prithvi1029/sentiment-analysis-for-financial-news](https://huggingface.co/datasets/prithvi1029/sentiment-analysis-for-financial-news) | 4,846 | Apache-2.0 |
+| [Jean-Baptiste/financial_news_sentiment_mixte_with_phrasebank_75](https://huggingface.co/datasets/Jean-Baptiste/financial_news_sentiment_mixte_with_phrasebank_75) | 4,446 (train) | MIT |
+
+Unified schema: `text, label, source, collected_at` (+ `audio`, `image` — null для текстовой модальности).
+
+---
+
+### 2. Что делал каждый агент
+
+**DataCollectionAgent (Задание 1):**
+Загрузил все 3 датасета через `load_dataset()`, нормализовал числовые метки Jean-Baptiste (0→negative, 1→neutral, 2→positive), объединил через `merge()` в единую схему.
+
+**DataQualityAgent (Задание 2):**
+Обнаружил дубликаты (~22%), дисбаланс классов (neutral доминирует), применил стратегию `median/drop/clip_iqr`. Детальный отчёт: `reports/quality_report.md`.
+
+**AnnotationAgent (Задание 3):**
+Zero-shot классификация через `cross-encoder/nli-MiniLM2-L6-H768` (~120MB). Порог confidence = 0.75. Строки ниже порога флагируются и выгружаются в `data/labeled/low_confidence.csv` для ручной правки. Экспорт в LabelStudio: `data/labeled/labelstudio_import.json`.
+
+**ActiveLearningAgent (Задание 4):**
+TF-IDF + LogisticRegression, стратегия entropy sampling. Сравнение с random baseline. Модель сохраняется в `models/al_pipeline.joblib`.
+
+---
+
+### 3. Описание HITL-точки
+
+В пайплайне **4 human-in-the-loop паузы** — после каждого этапа.
+
+**Основная точка правки — после авторазметки (Stage 3):**
+
+1. AnnotationAgent флагирует строки с `confidence < 0.75`
+2. Они сохраняются в `data/labeled/low_confidence.csv`
+3. Пайплайн останавливается и выводит путь к файлу
+4. Человек открывает CSV, исправляет ошибочные метки в колонке `label`
+5. После нажатия Enter — `run_pipeline.py` перечитывает файл и применяет правки через join по тексту
+6. Число применённых правок выводится в лог и фиксируется в `reports/annotation_report.md`
+
+Пример того, что проверяет человек: строки где модель неуверенно назначила `neutral` финансовым новостям с явным негативным контекстом.
+
+---
+
+### 4. Метрики качества
+
+Все метрики генерируются автоматически в `reports/`:
+
+| Этап | Файл | Ключевые метрики |
+|------|------|-----------------|
+| Сбор | `reports/quality_report.md` | источники, строк, распределение |
+| Чистка | `reports/quality_report.md` | severity, дубликаты, строк до/после |
+| Разметка | `reports/annotation_report.md` | confidence mean/std, flagged%, label dist |
+| AL | `reports/al_report.md` | F1 entropy vs random, экономия меток |
+
+**Итоговые метрики модели** (LogisticRegression + TF-IDF, 150 меток):
+- Accuracy и F1 (weighted) — см. `reports/al_report.md` и `data/al/learning_curve.png`
+- Сохранённая модель: `models/al_pipeline.joblib`
+
+---
+
+### 5. Ретроспектива
+
+**Что сработало хорошо:**
+- Zero-shot NLI (MiniLM) быстро работает на CPU (~120MB vs 1.6GB для bart-large)
+- Entropy sampling стабильно опережает random при малом числе меток
+- Единая схема `text/label/source/collected_at` упрощает объединение источников
+
+**Что не сработало / что бы сделал иначе:**
+- NLI-модель плохо разделяет `neutral` от `positive/negative` в финансовом тексте — нужна доменная модель (FinBERT)
+- Большой дисбаланс класса `neutral` во всех источниках (~60%) — при aggressive undersampling теряется много данных
+- HITL через CSV-файл — неудобно; лучше Gradio/Streamlit интерфейс для разметки прямо в браузере
+- `run_pipeline.py` пересобирает данные с нуля каждый раз — стоит добавить кеширование промежуточных файлов
