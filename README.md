@@ -99,8 +99,8 @@ claude .
 
 ### 4. Запустить пайплайн
 
-```
-/data-pipeline "отзывы на товары" --classes "positive,negative,neutral" --task "классификация тональности"
+```bash
+uv run run_pipeline.py
 ```
 
 ---
@@ -114,7 +114,8 @@ claude .
 └──────────────────┘    └──────────────────┘    └──────────────────┘    └──────────────────┘
         │                       │                       │                       │
         ▼                       ▼                       ▼                       ▼
-data/raw/unified.csv   data/cleaned.csv        data/labeled.csv        learning_curve.png
+data/raw/unified.csv   data/cleaned/           data/labeled/           data/al/learning_curve.png
+                       unified_clean.csv       labeled.csv
 ```
 
 На каждом этапе — **human-in-the-loop**: агент останавливается, показывает что нашёл,
@@ -206,15 +207,15 @@ metrics = agent.check_quality(df_labeled, reference_col='human_label')
 # → {'kappa': 0.72, 'label_dist': {...}, 'confidence_mean': 0.85}
 
 agent.export_to_labelstudio(df_labeled)
-# → labelstudio_import.json + low_confidence.csv (human-in-the-loop бонус)
+# → labelstudio_import.json + review_queue.csv (human-in-the-loop бонус)
 ```
 
 ```bash
 uv run agents/annotation_agent.py \
-    --input data/cleaned.csv \
+    --input data/cleaned/unified_clean.csv \
     --labels "positive,negative,neutral" \
     --confidence-threshold 0.75 \
-    --output-dir data
+    --output-dir data/labeled
 ```
 
 ### ActiveLearningAgent (Задание 4)
@@ -245,10 +246,10 @@ uv run agents/al_agent.py \
     --compare --output-dir data
 ```
 
-**Результат на newsgroups (3 класса, 2649 строк):**
-- Entropy достигает F1=0.52 при **90 метках**
-- Random достигает той же F1 при **150 метках**
-- Экономия: **60 меток (40%)**
+**Результат на финансовых новостях (3 класса, 4,119 строк, сбалансировано):**
+- Entropy достигает F1=0.760 при **1,500 метках**
+- Random достигает той же F1 при **1,750 метках**
+- Экономия: **250 меток (16.7%)** — подробнее в `reports/al_report.md`
 
 ---
 
@@ -259,9 +260,7 @@ uv run agents/al_agent.py \
 | Dataset Search | `skills/dataset_search.md` | DataCollectionAgent |
 | Scrape | `skills/scrape.md` | DataCollectionAgent |
 | Fetch API | `skills/fetch_api.md` | DataCollectionAgent |
-| Merge Sources | `skills/merge_sources.md` | DataCollectionAgent |
 | Detect Issues | `skills/detect_issues.md` | DataQualityAgent |
-| Fix Data | `skills/fix_data.md` | DataQualityAgent |
 | Auto Label | `skills/auto_label.md` | AnnotationAgent |
 | Check Quality | `skills/check_quality.md` | AnnotationAgent |
 | Export LabelStudio | `skills/export_labelstudio.md` | AnnotationAgent |
@@ -285,9 +284,7 @@ uv run agents/al_agent.py \
 │   ├── dataset_search.md          # Поиск датасетов
 │   ├── scrape.md                  # Playwright скрапинг
 │   ├── fetch_api.md               # REST API коллектор
-│   ├── merge_sources.md           # Объединение источников
 │   ├── detect_issues.md           # Детекция проблем
-│   ├── fix_data.md                # Чистка данных
 │   ├── auto_label.md              # Zero-shot разметка
 │   ├── check_quality.md           # Метрики качества
 │   ├── export_labelstudio.md      # Экспорт в LabelStudio
@@ -385,7 +382,7 @@ Unified schema: `text, label, source, collected_at` (+ `audio`, `image` — null
 Обнаружил дубликаты (~22%), дисбаланс классов (neutral доминирует), применил стратегию `median/drop/clip_iqr`. Детальный отчёт: `reports/quality_report.md`.
 
 **AnnotationAgent (Задание 3):**
-Zero-shot классификация через `cross-encoder/nli-MiniLM2-L6-H768` (~120MB). Порог confidence = 0.75. Строки ниже порога флагируются и выгружаются в `data/labeled/low_confidence.csv` для ручной правки. Экспорт в LabelStudio: `data/labeled/labelstudio_import.json`.
+Zero-shot классификация через `cross-encoder/nli-MiniLM2-L6-H768` (~120MB). Порог confidence = 0.75. Строки ниже порога флагируются и выгружаются в `data/labeled/review_queue.csv` для ручной правки. Экспорт в LabelStudio: `data/labeled/labelstudio_import.json`.
 
 **ActiveLearningAgent (Задание 4):**
 TF-IDF + LogisticRegression, стратегия entropy sampling. Сравнение с random baseline. Модель сохраняется в `models/al_pipeline.joblib`.
@@ -399,7 +396,7 @@ TF-IDF + LogisticRegression, стратегия entropy sampling. Сравнен
 **Основная точка правки — после авторазметки (Stage 3):**
 
 1. AnnotationAgent флагирует строки с `confidence < 0.75`
-2. Они сохраняются в `data/labeled/low_confidence.csv`
+2. Они сохраняются в `data/labeled/review_queue.csv`
 3. Пайплайн останавливается и выводит путь к файлу
 4. Человек открывает CSV, исправляет ошибочные метки в колонке `label`
 5. После нажатия Enter — `run_pipeline.py` перечитывает файл и применяет правки через join по тексту
@@ -420,7 +417,7 @@ TF-IDF + LogisticRegression, стратегия entropy sampling. Сравнен
 | Разметка | `reports/annotation_report.md` | confidence mean/std, flagged%, label dist |
 | AL | `reports/al_report.md` | F1 entropy vs random, экономия меток |
 
-**Итоговые метрики модели** (LogisticRegression + TF-IDF, 150 меток):
+**Итоговые метрики модели** (LogisticRegression + TF-IDF, 1,500 меток):
 - Accuracy и F1 (weighted) — см. `reports/al_report.md` и `data/al/learning_curve.png`
 - Сохранённая модель: `models/al_pipeline.joblib`
 
