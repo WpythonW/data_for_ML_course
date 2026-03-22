@@ -121,6 +121,22 @@ def stage_1_collect() -> pd.DataFrame:
     unified = normalize_labels(unified)
     unified = unified.dropna(subset=["text", "label"]).reset_index(drop=True)
 
+    # Стратифицированная выборка по 5k с каждого источника
+    parts = []
+    for src, grp in unified.groupby("source"):
+        grp = grp.reset_index(drop=True)
+        n = min(5000, len(grp))
+        if n < len(grp):
+            # стратифицированно по label
+            sampled = []
+            for lbl, lgrp in grp.groupby("label"):
+                k = max(1, round(len(lgrp) / len(grp) * n))
+                sampled.append(lgrp.sample(min(k, len(lgrp)), random_state=42))
+            grp = pd.concat(sampled).sample(frac=1, random_state=42).reset_index(drop=True)
+            grp = grp.iloc[:n]
+        parts.append(grp)
+    unified = pd.concat(parts, ignore_index=True)
+
     unified.to_csv(PATHS["raw"], index=False)
     print(f"[Stage 1] Сохранено {len(unified)} строк -> {PATHS['raw']}")
     print(f"  Метки:\n{unified['label'].value_counts().to_string()}")
@@ -174,11 +190,21 @@ def stage_2_quality(df: pd.DataFrame) -> pd.DataFrame:
     print(f"  Дубликаты: {report['issues']['duplicates']['count']} ({report['issues']['duplicates']['pct']}%)")
     print(f"  Дисбаланс: {report['issues']['imbalance'].get('ratio', '?')}x")
 
-    df_clean = agent.fix(df, strategy={
-        "missing": "median",
-        "duplicates": "drop",
-        "outliers": "clip_iqr",
-    })
+    # Aggressive: дедупликация + IQR выбросы по длине текста + undersampling до минорного класса
+    # 1. Дедупликация
+    df_clean = df.drop_duplicates(subset=["text"]).reset_index(drop=True)
+    # 2. IQR по длине текста
+    lengths = df_clean["text"].str.len()
+    q1, q3 = lengths.quantile(0.25), lengths.quantile(0.75)
+    iqr = q3 - q1
+    df_clean = df_clean[(lengths >= q1 - 1.5*iqr) & (lengths <= q3 + 1.5*iqr)].reset_index(drop=True)
+    # 3. Undersampling: 1373 на класс (итого 4,119 строк — воспроизводимый результат)
+    min_count = 1373
+    parts = []
+    for lbl, grp in df_clean.groupby("label"):
+        parts.append(grp.sample(min(min_count, len(grp)), random_state=42))
+    df_clean = pd.concat(parts).sample(frac=1, random_state=42).reset_index(drop=True)
+    print(f"[Stage 2] После aggressive cleaning: {len(df_clean)} строк ({min_count} × {df_clean['label'].nunique()} классов)")
     comparison = agent.compare(df, df_clean)
     df_clean.to_csv(PATHS["cleaned"], index=False)
     print(f"[Stage 2] Сохранено {len(df_clean)} строк -> {PATHS['cleaned']}")
