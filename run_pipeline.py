@@ -10,7 +10,7 @@ Full ML Pipeline — Financial News Sentiment Classification
   4. Active Learning (ActiveLearningAgent) — entropy vs random, сохранение модели
 
 Human-in-the-loop: после каждого этапа пайплайн останавливается и ждёт подтверждения.
-После авторазметки — явная точка правки: data/labeled/low_confidence.csv.
+После авторазметки — явная точка правки: data/labeled/review_queue.csv.
 """
 
 # ── 0. Env setup — до любых импортов библиотек ───────────────────────────────
@@ -48,7 +48,7 @@ PATHS = {
     "raw":         Path("data/raw/unified.csv"),
     "cleaned":     Path("data/cleaned/unified_clean.csv"),
     "labeled":     Path("data/labeled/labeled.csv"),
-    "low_conf":    Path("data/labeled/low_confidence.csv"),
+    "low_conf":    Path("data/labeled/review_queue.csv"),
     "labelstudio": Path("data/labeled/labelstudio_import.json"),
     "al_dir":      Path("data/al"),
     "models":      Path("models"),
@@ -267,7 +267,7 @@ def stage_3_annotate(df: pd.DataFrame) -> pd.DataFrame:
     # Auto-label
     df_labeled = agent.auto_label(df, candidate_labels=LABELS, text_col="text")
 
-    # Export: labelstudio + low_confidence.csv
+    # Export: labelstudio + review_queue.csv
     agent.export_to_labelstudio(
         df_labeled,
         text_col="text",
@@ -299,7 +299,7 @@ def stage_3_annotate(df: pd.DataFrame) -> pd.DataFrame:
     print("="*60)
     input("После правки нажмите Enter (или Enter без правок чтобы продолжить)...\n")
 
-    # Применяем правки из low_confidence.csv (join по тексту)
+    # Применяем правки из review_queue.csv (join по тексту)
     applied = 0
     if PATHS["low_conf"].exists():
         corrected = pd.read_csv(PATHS["low_conf"])
@@ -346,7 +346,7 @@ def stage_3_annotate(df: pd.DataFrame) -> pd.DataFrame:
 
 ## HITL
 
-- Low-confidence файл: `data/labeled/low_confidence.csv`
+- Low-confidence файл: `data/labeled/review_queue.csv`
 - Правок применено: **{applied}**
 - Допустимые классы: {LABELS}
 

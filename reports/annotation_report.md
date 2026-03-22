@@ -35,7 +35,7 @@
 
 | Параметр | Значение |
 |----------|----------|
-| Файл для правки | data/labeled/low_confidence.csv |
+| Файл для правки | data/labeled/review_queue.csv |
 | Строк флаговано | 2,114 (51.3%) |
 | Порог | confidence < 0.75 |
 | Формат правки | редактировать колонку `label` в CSV |
@@ -49,7 +49,7 @@
 | Файл | Описание |
 |------|---------|
 | `data/labeled/labeled.csv` | Финальный размеченный датасет (4,119 строк) |
-| `data/labeled/low_confidence.csv` | Строки для ручной проверки (2,114 строк) |
+| `data/labeled/review_queue.csv` | Строки для ручной проверки (2,114 строк) |
 | `data/labeled/labelstudio_import.json` | Импорт для LabelStudio |
 | `data/labeled/annotation_spec.md` | Спецификация разметки с примерами и граничными случаями |
 
