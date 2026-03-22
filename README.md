@@ -5,6 +5,14 @@
 
 ---
 
+## Демо-видео
+
+Запись демонстрации полного пайплайна: [Google Drive](https://drive.google.com/drive/folders/1lw1AV9gAPa6Vb1bh69g7H-8kpW4edqnU?usp=sharing)
+
+Сценарий видео: [VIDEO_SCRIPT.md](./VIDEO_SCRIPT.md)
+
+---
+
 ## Быстрый старт
 
 ### 1. Установить зависимости

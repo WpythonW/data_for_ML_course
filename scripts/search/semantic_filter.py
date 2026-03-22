@@ -3,12 +3,9 @@ Multi-stage dataset filtering pipeline.
 
 Stages:
   1. BM25 — broad keyword ranking
-  2. OpenRouter — summarize + filter candidates (lаконично, экономно)
+  2. OpenRouter — summarize + filter candidates
   3. OpenRouter — rerank survivors
-  4. Haiku step 1 — review BM25+rerank scores, pick which datasets warrant questions,
-                    generate targeted questions per dataset
-  5. OpenRouter — answer Haiku's questions (laconic)
-  6. Haiku step 2 — read answers, make final selection (narrow bottleneck)
+  4. Return top-10 for human review in main chat
 
 Global deduplication: rejected IDs are written to --rejected-ids-file and
 never passed to OpenRouter or Haiku again.
@@ -526,7 +523,7 @@ def main():
     print(f"  Input:    {len(datasets)} datasets")
     print(f"  Goal:     {args.goal}")
     print(f"  BM25 top: {args.bm25_top}")
-    print(f"  OR model: {or_model}  |  Haiku: {HAIKU_MODEL}")
+    print(f"  OR model: {or_model}")
     print(f"{'='*60}\n")
 
     # ── Stage 1: BM25 ──
@@ -552,34 +549,10 @@ def main():
     print("\n[Stage 3] OpenRouter rerank...")
     datasets = openrouter_rerank(datasets, args.goal, or_model)
 
-    # ── Stage 3.5 + 4 in parallel: fetch cards AND Haiku step 1 ──
-    print("\n[Stage 3.5 + 4] Fetching cards & Haiku questions in parallel (async)...")
+    # ── Stage 4: top-10 for human review ──
+    top10 = datasets[:10]
 
-    async def stages_3_5_and_4():
-        import httpx
-        token = os.getenv("HF_TOKEN", "")
-        async with httpx.AsyncClient() as session:
-            cards_task = fetch_cards_async(datasets)
-            haiku_task = asyncio.to_thread(haiku_generate_questions, datasets, args.goal, bm25_scores)
-            updated_datasets, questions_map = await asyncio.gather(cards_task, haiku_task)
-        return updated_datasets, questions_map
-
-    datasets, questions_map = asyncio.run(stages_3_5_and_4())
-
-    # ── Stage 5: OpenRouter answers questions ──
-    print("\n[Stage 5] OpenRouter: answer Haiku's questions...")
-    answers = openrouter_answer_questions(questions_map, datasets, or_model)
-
-    # ── Stage 6: Haiku step 2 — final selection ──
-    print("\n[Stage 6] Haiku: final selection (narrow bottleneck)...")
-    final = haiku_final_selection(datasets, args.goal, answers, bm25_scores)
-
-    # Track rejected by Haiku (all datasets not in final)
-    final_ids = {d["id"] for d in final}
-    haiku_rejected = {d["id"] for d in datasets if d["id"] not in final_ids}
-    new_rejected |= haiku_rejected
-
-    _save_and_exit(final, args.output, rejected_ids | new_rejected, args.rejected_ids_file)
+    _save_and_exit(top10, args.output, rejected_ids | new_rejected, args.rejected_ids_file)
 
 
 def _save_and_exit(datasets: list[dict], output: str, all_rejected: set, rejected_file: str):

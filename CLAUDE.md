@@ -23,26 +23,25 @@ dataset-agent/
 
 | Agent | File | Trigger |
 |-------|------|---------|
-| dataset-searcher | `.claude/agents/dataset-searcher.md` | User asks to find/search/collect datasets |
-| data-quality | `.claude/agents/data-quality.md` | User asks to analyze, clean, or audit a dataset |
-| annotation-agent | `.claude/agents/annotation-agent.md` | User asks to annotate, label, or mark up a dataset |
-| al-agent | `agents/al-agent.md` | User asks about active learning, smart data selection, labeling efficiency |
-| data-pipeline | `skills/data_pipeline.md` | User wants to run the full pipeline end-to-end |
+| pipeline-agent | `.claude/agents/pipeline-agent.md` | User wants to run the full pipeline end-to-end (orchestrates all 4 stages with human-in-the-loop) |
+| data-quality | `.claude/agents/data-quality.md` | User asks to analyze, clean, or audit a dataset (standalone) |
+| annotation-agent | `.claude/agents/annotation-agent.md` | User asks to annotate, label, or mark up a dataset (standalone) |
+| al-agent | `agents/al-agent.md` | User asks about active learning, smart data selection (standalone) |
 
 ## Skills Registry
 
 | Skill | File | Used by |
 |-------|------|---------|
-| Dataset Search | `skills/dataset_search.md` | dataset-searcher agent |
-| Scrape | `skills/scrape.md` | dataset-searcher agent |
-| Fetch API | `skills/fetch_api.md` | dataset-searcher agent |
-| Merge Sources | `skills/merge_sources.md` | dataset-searcher agent |
-| Detect Issues | `skills/detect_issues.md` | data-quality agent |
-| Fix Data | `skills/fix_data.md` | data-quality agent |
-| Auto Label | `skills/auto_label.md` | annotation-agent |
-| Check Quality | `skills/check_quality.md` | annotation-agent |
-| Export LabelStudio | `skills/export_labelstudio.md` | annotation-agent |
-| Active Learning | `skills/active_learning.md` | al-agent |
+| Dataset Search | `skills/dataset_search.md` | pipeline-agent (Stage 1) |
+| Scrape | `skills/scrape.md` | pipeline-agent (Stage 1) |
+| Fetch API | `skills/fetch_api.md` | pipeline-agent (Stage 1) |
+| Merge Sources | `skills/merge_sources.md` | pipeline-agent (Stage 1) |
+| Detect Issues | `skills/detect_issues.md` | pipeline-agent (Stage 2) |
+| Fix Data | `skills/fix_data.md` | pipeline-agent (Stage 2) |
+| Auto Label | `skills/auto_label.md` | pipeline-agent (Stage 3) |
+| Check Quality | `skills/check_quality.md` | pipeline-agent (Stage 3) |
+| Export LabelStudio | `skills/export_labelstudio.md` | pipeline-agent (Stage 3) |
+| Active Learning | `skills/active_learning.md` | pipeline-agent (Stage 4) |
 
 ## General Rules
 
@@ -54,9 +53,8 @@ dataset-agent/
 
 ## Agent Routing — STRICT
 
-- User asks to find/search/collect datasets → **dataset-searcher** agent
-- User asks to analyze/clean/audit data quality → **data-quality** agent
-- User asks to annotate/label/markup a dataset → **annotation-agent** agent
-- User asks about active learning / smart data selection → **al-agent** agent
-- User wants to run the full end-to-end pipeline → **data-pipeline** skill
-- **Never use general-purpose agent** as a substitute for the four project agents
+- User wants to run the full end-to-end pipeline → **pipeline-agent** (Haiku orchestrator, has checkpoints)
+- User asks to analyze/clean/audit data quality (standalone) → **data-quality** agent
+- User asks to annotate/label/markup a dataset (standalone) → **annotation-agent** agent
+- User asks about active learning / smart data selection (standalone) → **al-agent** agent
+- **Never use general-purpose agent** as a substitute for the project agents
